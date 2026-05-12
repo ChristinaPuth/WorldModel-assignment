@@ -11,7 +11,7 @@ class StudentWorldModel(nn.Module):
         self,
         obs_dim: int = 4,
         act_dim: int = 1,
-        hidden_dim: int = 512,
+        hidden_dim: int = 256,
         num_layers: int = 3,
         use_gru: bool = True,
         delta_limit: float = 3.0,
@@ -27,7 +27,6 @@ class StudentWorldModel(nn.Module):
             nn.Linear(obs_dim + act_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.SiLU(),
-            nn.Dropout(0.1),
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
         )
@@ -37,13 +36,12 @@ class StudentWorldModel(nn.Module):
             hidden_size=hidden_dim,
             num_layers=self.num_layers,
             batch_first=True,
-            dropout=0.1,
+            dropout=0.05,
         )
 
         self.head = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.SiLU(),
-            nn.Dropout(0.1),
             nn.Linear(hidden_dim // 2, obs_dim),
         )
 
