@@ -1,22 +1,22 @@
-"""Student one-step plus rollout loss with noise injection."""
+# """Student one-step plus rollout loss with noise injection."""
 
-from __future__ import annotations
+# from __future__ import annotations
 
-import torch
-import torch.nn.functional as F
+# import torch
+# import torch.nn.functional as F
 
-from .rollout import open_loop_rollout
+# from .rollout import open_loop_rollout
 
 
-def one_step_delta_loss(model, states, actions, normalizer):
-    obs = states[:, :-1].reshape(-1, states.shape[-1])
-    act = actions.reshape(-1, actions.shape[-1])
-    target_delta = (states[:, 1:] - states[:, :-1]).reshape(-1, states.shape[-1])
-    obs_norm = normalizer.normalize_obs(obs)
-    act_norm = normalizer.normalize_act(act)
-    target_norm = normalizer.normalize_delta(target_delta)
-    pred_norm, _ = model(obs_norm, act_norm, None)
-    return F.mse_loss(pred_norm, target_norm)
+# def one_step_delta_loss(model, states, actions, normalizer):
+#     obs = states[:, :-1].reshape(-1, states.shape[-1])
+#     act = actions.reshape(-1, actions.shape[-1])
+#     target_delta = (states[:, 1:] - states[:, :-1]).reshape(-1, states.shape[-1])
+#     obs_norm = normalizer.normalize_obs(obs)
+#     act_norm = normalizer.normalize_act(act)
+#     target_norm = normalizer.normalize_delta(target_delta)
+#     pred_norm, _ = model(obs_norm, act_norm, None)
+#     return F.mse_loss(pred_norm, target_norm)
 
 
 # def rollout_loss(model, states, actions, normalizer, warmup_steps, horizon):
