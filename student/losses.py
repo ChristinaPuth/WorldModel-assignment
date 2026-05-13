@@ -19,6 +19,83 @@ def one_step_delta_loss(model, states, actions, normalizer):
     return F.mse_loss(pred_norm, target_norm)
 
 
+# def rollout_loss(model, states, actions, normalizer, warmup_steps, horizon):
+#     needed_states = int(warmup_steps) + int(horizon) + 1
+#     if states.shape[1] < needed_states:
+#         raise ValueError(
+#             f"train_sequence_length too short: need {needed_states - 1} actions "
+#             f"for warmup={warmup_steps}, horizon={horizon}."
+#         )
+
+#     max_start = states.shape[1] - needed_states
+#     start = int(torch.randint(0, max_start + 1, (), device=states.device).item()) if max_start > 0 else 0
+
+#     sub_states = states[:, start: start + needed_states]
+#     sub_actions = actions[:, start: start + int(warmup_steps) + int(horizon)]
+
+#     preds = open_loop_rollout(
+#         model, sub_states, sub_actions, normalizer,
+#         warmup_steps=warmup_steps,
+#         horizon=horizon,
+#     )
+
+#     targets = sub_states[:, warmup_steps + 1: warmup_steps + 1 + horizon]
+
+#     pred_norm = normalizer.normalize_obs(preds)
+#     target_norm = normalizer.normalize_obs(targets)
+
+#     # per-step normalized MSE: [B, T]
+#     err = ((pred_norm - target_norm) ** 2).mean(dim=-1)
+
+#     # cap extreme drift so exploded trajectories do not dominate training
+#     err = torch.clamp(err, max=2.0)
+
+#     # mild later-step weighting, not too aggressive
+#     T = err.shape[1]
+#     weights = torch.linspace(1.0, 2.0, T, device=err.device)
+#     weights = weights / weights.mean()
+
+#     return (err * weights[None, :]).mean()
+# def compute_loss(model, batch, normalizer, cfg):
+#     loss_cfg = cfg["loss"]
+#     states = batch["states"]
+#     actions = batch["actions"]
+
+#     one = one_step_delta_loss(model, states, actions, normalizer)
+
+#     max_horizon = int(loss_cfg.get("rollout_train_horizon", 60))
+#     min_horizon = int(loss_cfg.get("rollout_min_horizon", 10))
+
+#     horizon = int(torch.randint(
+#         min_horizon,
+#         max_horizon + 1,
+#         (),
+#         device=states.device,
+#     ).item())
+
+#     warmup = int(cfg["eval"].get("warmup_steps", 10))
+
+#     roll = rollout_loss(
+#         model,
+#         states,
+#         actions,
+#         normalizer,
+#         warmup_steps=warmup,
+#         horizon=horizon,
+#     )
+
+#     one_w = float(loss_cfg.get("one_step_weight", 1.0))
+#     roll_w = float(loss_cfg.get("rollout_weight", 1.0))
+
+#     total = one_w * one + roll_w * roll
+
+#     return total, {
+#         "loss/total": float(total.detach().cpu()),
+#         "loss/one_step": float(one.detach().cpu()),
+#         "loss/rollout": float(roll.detach().cpu()),
+#     }
+
+
 def rollout_loss(model, states, actions, normalizer, warmup_steps, horizon):
     needed_states = int(warmup_steps) + int(horizon) + 1
     if states.shape[1] < needed_states:
@@ -34,7 +111,10 @@ def rollout_loss(model, states, actions, normalizer, warmup_steps, horizon):
     sub_actions = actions[:, start: start + int(warmup_steps) + int(horizon)]
 
     preds = open_loop_rollout(
-        model, sub_states, sub_actions, normalizer,
+        model,
+        sub_states,
+        sub_actions,
+        normalizer,
         warmup_steps=warmup_steps,
         horizon=horizon,
     )
@@ -44,18 +124,30 @@ def rollout_loss(model, states, actions, normalizer, warmup_steps, horizon):
     pred_norm = normalizer.normalize_obs(preds)
     target_norm = normalizer.normalize_obs(targets)
 
-    # per-step normalized MSE: [B, T]
-    err = ((pred_norm - target_norm) ** 2).mean(dim=-1)
+    err = ((pred_norm - target_norm) ** 2).mean(dim=-1)  # [B, T]
 
-    # cap extreme drift so exploded trajectories do not dominate training
-    err = torch.clamp(err, max=2.0)
+    # Average error, but capped so totally exploded rollouts do not dominate.
+    mse_loss = torch.clamp(err, max=2.0).mean()
 
-    # mild later-step weighting, not too aggressive
-    T = err.shape[1]
-    weights = torch.linspace(1.0, 2.0, T, device=err.device)
-    weights = weights / weights.mean()
+    # VPT-oriented q80 loss.
+    B, T = err.shape
+    k = max(1, int(0.8 * B))
+    q80_err = torch.kthvalue(err, k, dim=0).values  # [T]
 
-    return (err * weights[None, :]).mean()
+    # Use stricter margin than official 0.25.
+    margin_threshold = 0.15
+
+    # Focus where your model currently starts failing: roughly 20+ steps.
+    step_weights = torch.ones(T, device=err.device)
+    step_weights[:20] = 0.5
+    step_weights[20:min(T, 200)] = 2.0
+    step_weights[min(T, 200):] = 1.0
+    step_weights = step_weights / step_weights.mean()
+
+    q80_loss = (torch.relu(q80_err - margin_threshold) * step_weights).mean()
+
+    return mse_loss + 4.0 * q80_loss
+
 def compute_loss(model, batch, normalizer, cfg):
     loss_cfg = cfg["loss"]
     states = batch["states"]
@@ -63,29 +155,26 @@ def compute_loss(model, batch, normalizer, cfg):
 
     one = one_step_delta_loss(model, states, actions, normalizer)
 
-    max_horizon = int(loss_cfg.get("rollout_train_horizon", 60))
-    min_horizon = int(loss_cfg.get("rollout_min_horizon", 10))
-
-    horizon = int(torch.randint(
-        min_horizon,
-        max_horizon + 1,
-        (),
-        device=states.device,
-    ).item())
-
     warmup = int(cfg["eval"].get("warmup_steps", 10))
+    max_horizon = int(loss_cfg.get("rollout_train_horizon", 200))
 
-    roll = rollout_loss(
-        model,
-        states,
-        actions,
-        normalizer,
-        warmup_steps=warmup,
-        horizon=horizon,
-    )
+    candidate_horizons = [
+        max(10, max_horizon // 4),
+        max(20, max_horizon // 2),
+        max_horizon,
+    ]
 
-    one_w = float(loss_cfg.get("one_step_weight", 1.0))
-    roll_w = float(loss_cfg.get("rollout_weight", 1.0))
+    rollout_losses = []
+    for h in candidate_horizons:
+        if states.shape[1] >= warmup + h + 1:
+            rollout_losses.append(
+                rollout_loss(model, states, actions, normalizer, warmup, h)
+            )
+
+    roll = torch.stack(rollout_losses).mean()
+
+    one_w = float(loss_cfg.get("one_step_weight", 0.2))
+    roll_w = float(loss_cfg.get("rollout_weight", 2.5))
 
     total = one_w * one + roll_w * roll
 
