@@ -189,8 +189,33 @@ def compute_loss(model, batch: dict[str, torch.Tensor], normalizer, cfg: dict):
 
     one = one_step_delta_loss(model, states, actions, normalizer)
 
-    min_horizon = int(loss_cfg.get("rollout_min_horizon", 10))
-    max_horizon = int(loss_cfg.get("rollout_train_horizon", 100))
+    warmup = int(cfg["eval"].get("warmup_steps", 10))
+
+    desired_min_horizon = int(loss_cfg.get("rollout_min_horizon", 10))
+    desired_max_horizon = int(loss_cfg.get("rollout_train_horizon", 100))
+
+    # How many future prediction steps are actually available in this batch?
+    # states length = actions length + 1
+    max_from_states = states.shape[1] - warmup - 1
+    max_from_actions = actions.shape[1] - warmup
+    available_max_horizon = min(max_from_states, max_from_actions, desired_max_horizon)
+
+    one_w = float(loss_cfg.get("one_step_weight", 1.0))
+    roll_w = float(loss_cfg.get("rollout_weight", 1.0))
+
+    # Some unit tests use very short toy sequences.
+    # If rollout is impossible, train only one-step loss.
+    if available_max_horizon < 1:
+        total = one_w * one
+        return total, {
+            "loss/total": float(total.detach().cpu()),
+            "loss/one_step": float(one.detach().cpu()),
+            "loss/rollout": 0.0,
+        }
+
+    # Make sure min_horizon never exceeds available_max_horizon.
+    min_horizon = min(desired_min_horizon, available_max_horizon)
+    max_horizon = available_max_horizon
 
     horizon = int(
         torch.randint(
@@ -201,8 +226,6 @@ def compute_loss(model, batch: dict[str, torch.Tensor], normalizer, cfg: dict):
         ).item()
     )
 
-    warmup = int(cfg["eval"].get("warmup_steps", 10))
-
     roll = rollout_loss(
         model,
         states,
@@ -211,9 +234,6 @@ def compute_loss(model, batch: dict[str, torch.Tensor], normalizer, cfg: dict):
         warmup_steps=warmup,
         horizon=horizon,
     )
-
-    one_w = float(loss_cfg.get("one_step_weight", 1.0))
-    roll_w = float(loss_cfg.get("rollout_weight", 1.0))
 
     total = one_w * one + roll_w * roll
 
