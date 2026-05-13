@@ -95,7 +95,6 @@ def one_step_delta_loss(model, states, actions, normalizer):
 #         "loss/rollout": float(roll.detach().cpu()),
 #     }
 
-
 def rollout_loss(model, states, actions, normalizer, warmup_steps, horizon):
     needed_states = int(warmup_steps) + int(horizon) + 1
     if states.shape[1] < needed_states:
@@ -124,30 +123,15 @@ def rollout_loss(model, states, actions, normalizer, warmup_steps, horizon):
     pred_norm = normalizer.normalize_obs(preds)
     target_norm = normalizer.normalize_obs(targets)
 
-    err = ((pred_norm - target_norm) ** 2).mean(dim=-1)  # [B, T]
+    err = ((pred_norm - target_norm) ** 2).mean(dim=-1)
 
-    # Average error, but capped so totally exploded rollouts do not dominate.
-    mse_loss = torch.clamp(err, max=1.0).mean()
+    err = torch.clamp(err, max=2.0)
 
-    # VPT-oriented q80 loss.
-    B, T = err.shape
-    k = max(1, int(0.8 * B))
-    q80_err = torch.kthvalue(err, k, dim=0).values  # [T]
+    T = err.shape[1]
+    weights = torch.linspace(1.0, 2.0, T, device=err.device)
+    weights = weights / weights.mean()
 
-    # Use stricter margin than official 0.25.
-    margin_threshold = 0.2
-
-    # Focus where your model currently starts failing: roughly 20+ steps.
-    step_weights = torch.ones(T, device=err.device)
-    step_weights[:20] = 0.5
-    step_weights[20:min(T, 200)] = 2.0
-    step_weights[min(T, 200):] = 1.0
-    step_weights = step_weights / step_weights.mean()
-
-    q80_loss = (torch.relu(q80_err - margin_threshold) * step_weights).mean()
-
-    return mse_loss + 1.0 * q80_loss
-
+    return (err * weights[None, :]).mean()
 def compute_loss(model, batch, normalizer, cfg):
     loss_cfg = cfg["loss"]
     states = batch["states"]
@@ -155,26 +139,29 @@ def compute_loss(model, batch, normalizer, cfg):
 
     one = one_step_delta_loss(model, states, actions, normalizer)
 
+    max_horizon = int(loss_cfg.get("rollout_train_horizon", 100))
+    min_horizon = int(loss_cfg.get("rollout_min_horizon", 10))
+
+    horizon = int(torch.randint(
+        min_horizon,
+        max_horizon + 1,
+        (),
+        device=states.device,
+    ).item())
+
     warmup = int(cfg["eval"].get("warmup_steps", 10))
-    max_horizon = int(loss_cfg.get("rollout_train_horizon", 200))
 
-    candidate_horizons = [
-        max(10, max_horizon // 4),
-        max(20, max_horizon // 2),
-        max_horizon,
-    ]
+    roll = rollout_loss(
+        model,
+        states,
+        actions,
+        normalizer,
+        warmup_steps=warmup,
+        horizon=horizon,
+    )
 
-    rollout_losses = []
-    for h in candidate_horizons:
-        if states.shape[1] >= warmup + h + 1:
-            rollout_losses.append(
-                rollout_loss(model, states, actions, normalizer, warmup, h)
-            )
-
-    roll = torch.stack(rollout_losses).mean()
-
-    one_w = float(loss_cfg.get("one_step_weight", 0.2))
-    roll_w = float(loss_cfg.get("rollout_weight", 2.5))
+    one_w = float(loss_cfg.get("one_step_weight", 1.0))
+    roll_w = float(loss_cfg.get("rollout_weight", 1.0))
 
     total = one_w * one + roll_w * roll
 

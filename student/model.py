@@ -66,7 +66,6 @@
 #         return delta, hidden
 
 
-
 from __future__ import annotations
 
 import torch
@@ -76,7 +75,7 @@ from torch import nn
 class ResidualBlock(nn.Module):
     def __init__(self, hidden_dim: int, scale: float = 0.5):
         super().__init__()
-        self.scale = scale
+        self.scale = float(scale)
         self.net = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim),
@@ -89,14 +88,6 @@ class ResidualBlock(nn.Module):
 
 
 class StudentWorldModel(nn.Module):
-    """
-    Local Linear + Nonlinear Residual dynamics model.
-
-    Input:
-        normalized obs + normalized action
-    Output:
-        normalized delta
-    """
     def __init__(
         self,
         obs_dim: int = 4,
@@ -104,22 +95,15 @@ class StudentWorldModel(nn.Module):
         hidden_dim: int = 256,
         num_layers: int = 4,
         use_gru: bool = False,
-        delta_limit: float = 3.0,
-        residual_scale: float = 0.1,
+        delta_limit: float = 5.0,
     ):
         super().__init__()
         self.use_gru = False
         self.delta_limit = float(delta_limit)
-        self.residual_scale = float(residual_scale)
 
         in_dim = obs_dim + act_dim
 
-        # Linear dynamics part: good for near-upright pendulum.
-        self.linear_dynamics = nn.Linear(in_dim, obs_dim)
-        nn.init.zeros_(self.linear_dynamics.weight)
-        nn.init.zeros_(self.linear_dynamics.bias)
-        # Nonlinear correction part.
-        self.encoder = nn.Sequential(
+        self.input = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.SiLU(),
@@ -130,16 +114,12 @@ class StudentWorldModel(nn.Module):
             for _ in range(int(num_layers))
         ])
 
-        self.residual_head = nn.Sequential(
+        self.head = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, obs_dim),
         )
-
-        # Initialize residual small so model starts close to linear dynamics.
-        nn.init.zeros_(self.residual_head[-1].weight)
-        nn.init.zeros_(self.residual_head[-1].bias)
 
     def initial_hidden(self, batch_size: int, device: torch.device):
         return None
@@ -147,15 +127,11 @@ class StudentWorldModel(nn.Module):
     def forward(self, obs_norm: torch.Tensor, act_norm: torch.Tensor, hidden=None):
         x = torch.cat([obs_norm, act_norm], dim=-1)
 
-        linear_delta = self.linear_dynamics(x)
-
-        h = self.encoder(x)
+        h = self.input(x)
         for block in self.blocks:
             h = block(h)
 
-        residual_delta = self.residual_head(h)
-
-        raw_delta = linear_delta + self.residual_scale * residual_delta
-
+        raw_delta = self.head(h)
         delta = self.delta_limit * torch.tanh(raw_delta / self.delta_limit)
+
         return delta, None
