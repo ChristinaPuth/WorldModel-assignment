@@ -65,26 +65,18 @@
 
 #         return delta, hidden
 
+"""Student world model.
+
+Plain residual-delta MLP world model.
+
+This is closer to the version that gave the best dev result so far.
+It avoids GRU hidden-state mismatch and avoids unstable local-linear initialization.
+"""
 
 from __future__ import annotations
 
 import torch
 from torch import nn
-
-
-class ResidualBlock(nn.Module):
-    def __init__(self, hidden_dim: int, scale: float = 0.5):
-        super().__init__()
-        self.scale = float(scale)
-        self.net = nn.Sequential(
-            nn.LayerNorm(hidden_dim),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-        )
-
-    def forward(self, x):
-        return x + self.scale * self.net(x)
 
 
 class StudentWorldModel(nn.Module):
@@ -98,28 +90,22 @@ class StudentWorldModel(nn.Module):
         delta_limit: float = 5.0,
     ):
         super().__init__()
+
         self.use_gru = False
         self.delta_limit = float(delta_limit)
 
         in_dim = obs_dim + act_dim
+        layers: list[nn.Module] = []
 
-        self.input = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.SiLU(),
-        )
+        for _ in range(int(num_layers)):
+            layers += [
+                nn.Linear(in_dim, hidden_dim),
+                nn.SiLU(),
+            ]
+            in_dim = hidden_dim
 
-        self.blocks = nn.ModuleList([
-            ResidualBlock(hidden_dim, scale=0.5)
-            for _ in range(int(num_layers))
-        ])
-
-        self.head = nn.Sequential(
-            nn.LayerNorm(hidden_dim),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, obs_dim),
-        )
+        self.encoder = nn.Sequential(*layers)
+        self.head = nn.Linear(hidden_dim, obs_dim)
 
     def initial_hidden(self, batch_size: int, device: torch.device):
         return None
@@ -127,11 +113,10 @@ class StudentWorldModel(nn.Module):
     def forward(self, obs_norm: torch.Tensor, act_norm: torch.Tensor, hidden=None):
         x = torch.cat([obs_norm, act_norm], dim=-1)
 
-        h = self.input(x)
-        for block in self.blocks:
-            h = block(h)
+        feat = self.encoder(x)
+        raw_delta = self.head(feat)
 
-        raw_delta = self.head(h)
+        # Conservative but not too restrictive.
         delta = self.delta_limit * torch.tanh(raw_delta / self.delta_limit)
 
         return delta, None
