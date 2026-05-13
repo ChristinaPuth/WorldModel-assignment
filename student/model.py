@@ -104,8 +104,8 @@ class StudentWorldModel(nn.Module):
         hidden_dim: int = 256,
         num_layers: int = 4,
         use_gru: bool = False,
-        delta_limit: float = 10.0,
-        residual_scale: float = 0.2,
+        delta_limit: float = 3.0,
+        residual_scale: float = 0.1,
     ):
         super().__init__()
         self.use_gru = False
@@ -116,7 +116,8 @@ class StudentWorldModel(nn.Module):
 
         # Linear dynamics part: good for near-upright pendulum.
         self.linear_dynamics = nn.Linear(in_dim, obs_dim)
-
+        nn.init.zeros_(self.linear_dynamics.weight)
+        nn.init.zeros_(self.linear_dynamics.bias)
         # Nonlinear correction part.
         self.encoder = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),

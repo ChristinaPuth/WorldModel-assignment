@@ -127,7 +127,7 @@ def rollout_loss(model, states, actions, normalizer, warmup_steps, horizon):
     err = ((pred_norm - target_norm) ** 2).mean(dim=-1)  # [B, T]
 
     # Average error, but capped so totally exploded rollouts do not dominate.
-    mse_loss = torch.clamp(err, max=2.0).mean()
+    mse_loss = torch.clamp(err, max=1.0).mean()
 
     # VPT-oriented q80 loss.
     B, T = err.shape
@@ -135,7 +135,7 @@ def rollout_loss(model, states, actions, normalizer, warmup_steps, horizon):
     q80_err = torch.kthvalue(err, k, dim=0).values  # [T]
 
     # Use stricter margin than official 0.25.
-    margin_threshold = 0.15
+    margin_threshold = 0.2
 
     # Focus where your model currently starts failing: roughly 20+ steps.
     step_weights = torch.ones(T, device=err.device)
@@ -146,7 +146,7 @@ def rollout_loss(model, states, actions, normalizer, warmup_steps, horizon):
 
     q80_loss = (torch.relu(q80_err - margin_threshold) * step_weights).mean()
 
-    return mse_loss + 4.0 * q80_loss
+    return mse_loss + 1.0 * q80_loss
 
 def compute_loss(model, batch, normalizer, cfg):
     loss_cfg = cfg["loss"]
