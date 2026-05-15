@@ -1,108 +1,4 @@
-# """Student one-step plus rollout loss with noise injection."""
-
-# from __future__ import annotations
-
-# import torch
-# import torch.nn.functional as F
-
-# from .rollout import open_loop_rollout
-
-
-# def one_step_delta_loss(model, states, actions, normalizer):
-#     obs = states[:, :-1].reshape(-1, states.shape[-1])
-#     act = actions.reshape(-1, actions.shape[-1])
-#     target_delta = (states[:, 1:] - states[:, :-1]).reshape(-1, states.shape[-1])
-#     obs_norm = normalizer.normalize_obs(obs)
-#     act_norm = normalizer.normalize_act(act)
-#     target_norm = normalizer.normalize_delta(target_delta)
-#     pred_norm, _ = model(obs_norm, act_norm, None)
-#     return F.mse_loss(pred_norm, target_norm)
-
-
-# def rollout_loss(model, states, actions, normalizer, warmup_steps, horizon):
-#     needed_states = int(warmup_steps) + int(horizon) + 1
-#     if states.shape[1] < needed_states:
-#         raise ValueError(
-#             f"train_sequence_length too short: need {needed_states - 1} actions "
-#             f"for warmup={warmup_steps}, horizon={horizon}."
-#         )
-
-#     max_start = states.shape[1] - needed_states
-#     start = int(torch.randint(0, max_start + 1, (), device=states.device).item()) if max_start > 0 else 0
-
-#     sub_states = states[:, start: start + needed_states]
-#     sub_actions = actions[:, start: start + int(warmup_steps) + int(horizon)]
-
-#     preds = open_loop_rollout(
-#         model, sub_states, sub_actions, normalizer,
-#         warmup_steps=warmup_steps,
-#         horizon=horizon,
-#     )
-
-#     targets = sub_states[:, warmup_steps + 1: warmup_steps + 1 + horizon]
-
-#     pred_norm = normalizer.normalize_obs(preds)
-#     target_norm = normalizer.normalize_obs(targets)
-
-#     # per-step normalized MSE: [B, T]
-#     err = ((pred_norm - target_norm) ** 2).mean(dim=-1)
-
-#     # cap extreme drift so exploded trajectories do not dominate training
-#     err = torch.clamp(err, max=2.0)
-
-#     # mild later-step weighting, not too aggressive
-#     T = err.shape[1]
-#     weights = torch.linspace(1.0, 2.0, T, device=err.device)
-#     weights = weights / weights.mean()
-
-#     return (err * weights[None, :]).mean()
-# def compute_loss(model, batch, normalizer, cfg):
-#     loss_cfg = cfg["loss"]
-#     states = batch["states"]
-#     actions = batch["actions"]
-
-#     one = one_step_delta_loss(model, states, actions, normalizer)
-
-#     max_horizon = int(loss_cfg.get("rollout_train_horizon", 60))
-#     min_horizon = int(loss_cfg.get("rollout_min_horizon", 10))
-
-#     horizon = int(torch.randint(
-#         min_horizon,
-#         max_horizon + 1,
-#         (),
-#         device=states.device,
-#     ).item())
-
-#     warmup = int(cfg["eval"].get("warmup_steps", 10))
-
-#     roll = rollout_loss(
-#         model,
-#         states,
-#         actions,
-#         normalizer,
-#         warmup_steps=warmup,
-#         horizon=horizon,
-#     )
-
-#     one_w = float(loss_cfg.get("one_step_weight", 1.0))
-#     roll_w = float(loss_cfg.get("rollout_weight", 1.0))
-
-#     total = one_w * one + roll_w * roll
-
-#     return total, {
-#         "loss/total": float(total.detach().cpu()),
-#         "loss/one_step": float(one.detach().cpu()),
-#         "loss/rollout": float(roll.detach().cpu()),
-#     }
-
-
-
-
-"""Student one-step plus capped random-horizon rollout loss.
-
-This version removes q80 threshold loss and uses the simpler loss that was
-closer to the best observed VPT result.
-"""
+"""Student one-step plus rollout loss with noise injection."""
 
 from __future__ import annotations
 
@@ -112,119 +8,72 @@ import torch.nn.functional as F
 from .rollout import open_loop_rollout
 
 
-def one_step_delta_loss(model, states: torch.Tensor, actions: torch.Tensor, normalizer) -> torch.Tensor:
+def one_step_delta_loss(model, states, actions, normalizer):
     obs = states[:, :-1].reshape(-1, states.shape[-1])
     act = actions.reshape(-1, actions.shape[-1])
     target_delta = (states[:, 1:] - states[:, :-1]).reshape(-1, states.shape[-1])
-
     obs_norm = normalizer.normalize_obs(obs)
     act_norm = normalizer.normalize_act(act)
     target_norm = normalizer.normalize_delta(target_delta)
-
     pred_norm, _ = model(obs_norm, act_norm, None)
-
     return F.mse_loss(pred_norm, target_norm)
 
 
-def rollout_loss(
-    model,
-    states: torch.Tensor,
-    actions: torch.Tensor,
-    normalizer,
-    warmup_steps: int,
-    horizon: int,
-) -> torch.Tensor:
+def rollout_loss(model, states, actions, normalizer, warmup_steps, horizon):
     needed_states = int(warmup_steps) + int(horizon) + 1
-
     if states.shape[1] < needed_states:
         raise ValueError(
             f"train_sequence_length too short: need {needed_states - 1} actions "
-            f"for warmup={warmup_steps}, horizon={horizon}; "
-            f"got states length {states.shape[1]}."
+            f"for warmup={warmup_steps}, horizon={horizon}."
         )
 
     max_start = states.shape[1] - needed_states
+    start = int(torch.randint(0, max_start + 1, (), device=states.device).item()) if max_start > 0 else 0
 
-    if max_start > 0:
-        start = int(torch.randint(0, max_start + 1, (), device=states.device).item())
-    else:
-        start = 0
-
-    sub_states = states[:, start : start + needed_states]
-    sub_actions = actions[:, start : start + int(warmup_steps) + int(horizon)]
+    sub_states = states[:, start: start + needed_states]
+    sub_actions = actions[:, start: start + int(warmup_steps) + int(horizon)]
 
     preds = open_loop_rollout(
-        model,
-        sub_states,
-        sub_actions,
-        normalizer,
+        model, sub_states, sub_actions, normalizer,
         warmup_steps=warmup_steps,
         horizon=horizon,
     )
 
-    targets = sub_states[:, warmup_steps + 1 : warmup_steps + 1 + horizon]
+    targets = sub_states[:, warmup_steps + 1: warmup_steps + 1 + horizon]
 
     pred_norm = normalizer.normalize_obs(preds)
     target_norm = normalizer.normalize_obs(targets)
 
-    # Per-window, per-step normalized MSE: [B, T]
+    # per-step normalized MSE: [B, T]
     err = ((pred_norm - target_norm) ** 2).mean(dim=-1)
 
-    # Prevent already-exploded trajectories from dominating the whole batch.
+    # cap extreme drift so exploded trajectories do not dominate training
     err = torch.clamp(err, max=2.0)
 
-    # Mild later-step weight. Do not make it too aggressive.
+    # mild later-step weighting, not too aggressive
     T = err.shape[1]
     weights = torch.linspace(1.0, 2.0, T, device=err.device)
     weights = weights / weights.mean()
 
     return (err * weights[None, :]).mean()
-
-
-def compute_loss(model, batch: dict[str, torch.Tensor], normalizer, cfg: dict):
+def compute_loss(model, batch, normalizer, cfg):
     loss_cfg = cfg["loss"]
-
     states = batch["states"]
     actions = batch["actions"]
 
     one = one_step_delta_loss(model, states, actions, normalizer)
 
+    max_horizon = int(loss_cfg.get("rollout_train_horizon", 60))
+    min_horizon = int(loss_cfg.get("rollout_min_horizon", 10))
+
+    horizon = int(torch.randint(
+        min_horizon,
+        max_horizon + 1,
+        (),
+        device=states.device,
+    ).item())
+
     warmup = int(cfg["eval"].get("warmup_steps", 10))
-
-    desired_min_horizon = int(loss_cfg.get("rollout_min_horizon", 10))
-    desired_max_horizon = int(loss_cfg.get("rollout_train_horizon", 100))
-
-    # How many future prediction steps are actually available in this batch?
-    # states length = actions length + 1
-    max_from_states = states.shape[1] - warmup - 1
-    max_from_actions = actions.shape[1] - warmup
-    available_max_horizon = min(max_from_states, max_from_actions, desired_max_horizon)
-
-    one_w = float(loss_cfg.get("one_step_weight", 1.0))
-    roll_w = float(loss_cfg.get("rollout_weight", 1.0))
-
-    # Some unit tests use very short toy sequences.
-    # If rollout is impossible, train only one-step loss.
-    if available_max_horizon < 1:
-        total = one_w * one
-        return total, {
-            "loss/total": float(total.detach().cpu()),
-            "loss/one_step": float(one.detach().cpu()),
-            "loss/rollout": 0.0,
-        }
-
-    # Make sure min_horizon never exceeds available_max_horizon.
-    min_horizon = min(desired_min_horizon, available_max_horizon)
-    max_horizon = available_max_horizon
-
-    horizon = int(
-        torch.randint(
-            min_horizon,
-            max_horizon + 1,
-            (),
-            device=states.device,
-        ).item()
-    )
 
     roll = rollout_loss(
         model,
@@ -235,6 +84,9 @@ def compute_loss(model, batch: dict[str, torch.Tensor], normalizer, cfg: dict):
         horizon=horizon,
     )
 
+    one_w = float(loss_cfg.get("one_step_weight", 1.0))
+    roll_w = float(loss_cfg.get("rollout_weight", 1.0))
+
     total = one_w * one + roll_w * roll
 
     return total, {
@@ -242,3 +94,5 @@ def compute_loss(model, batch: dict[str, torch.Tensor], normalizer, cfg: dict):
         "loss/one_step": float(one.detach().cpu()),
         "loss/rollout": float(roll.detach().cpu()),
     }
+
+
