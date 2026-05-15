@@ -182,6 +182,7 @@ def compute_loss(model, batch, normalizer, cfg):
 
     # 课程学习：前30%训练用短horizon，后期逐渐增长
     curriculum_ratio = min(1.0, _global_step / (total_updates * 0.3))
+    warmup = int(cfg["eval"].get("warmup_steps", 10))
     current_max = int(min_horizon + curriculum_ratio * (max_horizon - min_horizon))
     current_max = max(current_max, min_horizon)
     current_max = min(current_max, states.shape[1] - warmup - 1)
@@ -193,7 +194,7 @@ def compute_loss(model, batch, normalizer, cfg):
         device=states.device,
     ).item())
 
-    warmup = int(cfg["eval"].get("warmup_steps", 10))
+    
 
     roll = rollout_loss(
         model, states, actions, normalizer,
