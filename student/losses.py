@@ -178,7 +178,8 @@ def compute_loss(model, batch, normalizer, cfg):
 
     max_horizon = int(loss_cfg.get("rollout_train_horizon", 150))
     min_horizon = int(loss_cfg.get("rollout_min_horizon", 10))
-    total_updates = int(cfg["training"].get("updates", 30000))
+    # total_updates = int(cfg["training"].get("updates", 30000))
+    total_updates = int(cfg.get("training", {}).get("updates", 30000))
 
     # 课程学习：前30%训练用短horizon，后期逐渐增长
     curriculum_ratio = min(1.0, _global_step / (total_updates * 0.3))
