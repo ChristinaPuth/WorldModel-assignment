@@ -122,6 +122,12 @@ def one_step_delta_loss(model, states, actions, normalizer):
 
 
 def rollout_loss(model, states, actions, normalizer, warmup_steps, horizon):
+    # 加这3行保护
+    max_possible = states.shape[1] - int(warmup_steps) - 1
+    horizon = min(int(horizon), max_possible)
+    if horizon <= 0:
+        return torch.tensor(0.0, device=states.device, requires_grad=True)
+    
     needed_states = int(warmup_steps) + int(horizon) + 1
     if states.shape[1] < needed_states:
         raise ValueError(
@@ -178,6 +184,7 @@ def compute_loss(model, batch, normalizer, cfg):
     curriculum_ratio = min(1.0, _global_step / (total_updates * 0.3))
     current_max = int(min_horizon + curriculum_ratio * (max_horizon - min_horizon))
     current_max = max(current_max, min_horizon)
+    current_max = min(current_max, states.shape[1] - warmup - 1)
 
     horizon = int(torch.randint(
         min_horizon,
