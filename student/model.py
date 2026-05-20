@@ -65,8 +65,7 @@
 
 #         return delta, hidden
 
-
-"""Student world model — GRU with residual prediction and layer normalization."""
+"""Student world model - GRU with residual prediction."""
 
 from __future__ import annotations
 
@@ -79,7 +78,7 @@ class StudentWorldModel(nn.Module):
         self,
         obs_dim: int = 4,
         act_dim: int = 1,
-        hidden_dim: int = 512,        # 256→512，更大容量
+        hidden_dim: int = 512,
         num_layers: int = 3,
         use_gru: bool = True,
         delta_limit: float = 3.0,
@@ -91,7 +90,6 @@ class StudentWorldModel(nn.Module):
         self.delta_limit = float(delta_limit)
         self.num_layers = int(num_layers)
 
-        # 输入编码器：obs+act → hidden
         self.input_encoder = nn.Sequential(
             nn.Linear(obs_dim + act_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -106,18 +104,14 @@ class StudentWorldModel(nn.Module):
             hidden_size=hidden_dim,
             num_layers=self.num_layers,
             batch_first=True,
-            dropout=0.1,
+            dropout=0.15,
         )
 
-        # GRU输出后的LayerNorm，稳定长序列预测
         self.gru_norm = nn.LayerNorm(hidden_dim)
 
-        # 残差MLP head：两层 + skip connection
         self.head_fc1 = nn.Linear(hidden_dim, hidden_dim // 2)
         self.head_norm = nn.LayerNorm(hidden_dim // 2)
         self.head_fc2 = nn.Linear(hidden_dim // 2, obs_dim)
-
-        # 直接从hidden_dim到obs_dim的skip，帮助梯度流动
         self.skip_proj = nn.Linear(hidden_dim, obs_dim)
 
     def initial_hidden(self, batch_size: int, device: torch.device):
@@ -133,12 +127,10 @@ class StudentWorldModel(nn.Module):
         feat = self.input_encoder(torch.cat([obs_norm, act_norm], dim=-1))
         feat = feat.unsqueeze(1)
         out, hidden = self.gru(feat, hidden)
-        out = self.gru_norm(out.squeeze(1))  # LayerNorm after GRU
+        out = self.gru_norm(out.squeeze(1))
 
-        # 残差head
         h = torch.nn.functional.silu(self.head_norm(self.head_fc1(out)))
-        raw_delta = self.head_fc2(h) + self.skip_proj(out)  # skip connection
-
+        raw_delta = self.head_fc2(h) + self.skip_proj(out)
         delta = self.delta_limit * torch.tanh(raw_delta / self.delta_limit)
 
         return delta, hidden

@@ -96,7 +96,6 @@
 #     }
 
 
-
 """Student one-step plus rollout loss with curriculum horizon."""
 
 from __future__ import annotations
@@ -106,7 +105,6 @@ import torch.nn.functional as F
 
 from .rollout import open_loop_rollout
 
-# 全局步数计数器，因为训练脚本不传step给我们
 _global_step = 0
 
 
@@ -122,12 +120,11 @@ def one_step_delta_loss(model, states, actions, normalizer):
 
 
 def rollout_loss(model, states, actions, normalizer, warmup_steps, horizon):
-    # 加这3行保护
     max_possible = states.shape[1] - int(warmup_steps) - 1
     horizon = min(int(horizon), max_possible)
     if horizon <= 0:
         return torch.tensor(0.0, device=states.device, requires_grad=True)
-    
+
     needed_states = int(warmup_steps) + int(horizon) + 1
     if states.shape[1] < needed_states:
         raise ValueError(
@@ -136,28 +133,38 @@ def rollout_loss(model, states, actions, normalizer, warmup_steps, horizon):
         )
 
     max_start = states.shape[1] - needed_states
-    start = int(torch.randint(0, max_start + 1, (), device=states.device).item()) if max_start > 0 else 0
+    start = (
+        int(torch.randint(0, max_start + 1, (), device=states.device).item())
+        if max_start > 0
+        else 0
+    )
 
-    sub_states = states[:, start: start + needed_states]
-    sub_actions = actions[:, start: start + int(warmup_steps) + int(horizon)]
+    sub_states = states[:, start : start + needed_states]
+    sub_actions = actions[:, start : start + int(warmup_steps) + int(horizon)]
 
     preds = open_loop_rollout(
-        model, sub_states, sub_actions, normalizer,
+        model,
+        sub_states,
+        sub_actions,
+        normalizer,
         warmup_steps=warmup_steps,
         horizon=horizon,
     )
 
-    targets = sub_states[:, warmup_steps + 1: warmup_steps + 1 + horizon]
+    targets = sub_states[:, warmup_steps + 1 : warmup_steps + 1 + horizon]
 
     pred_norm = normalizer.normalize_obs(preds)
     target_norm = normalizer.normalize_obs(targets)
 
-    err = ((pred_norm - target_norm) ** 2).mean(dim=-1)  # [B, T]
+    # InvertedPendulum 4维: [cart_pos, cart_vel, pole_angle, pole_vel]
+    # pole_angle(第3维) 最重要，给更高权重
+    dim_weights = torch.tensor(
+        [0.5, 0.5, 2.0, 1.0], device=preds.device, dtype=torch.float32
+    )
+    err = ((pred_norm - target_norm) ** 2 * dim_weights[None, None, :]).mean(dim=-1)
 
-    # 更保守的截断，防止爆炸轨迹主导梯度
     err = torch.clamp(err, max=4.0)
 
-    # 指数加权：后面步骤权重更高，鼓励长期稳定
     T = err.shape[1]
     t_idx = torch.arange(T, device=err.device, dtype=torch.float32)
     weights = torch.exp(0.5 * t_idx / T)
@@ -176,29 +183,31 @@ def compute_loss(model, batch, normalizer, cfg):
 
     one = one_step_delta_loss(model, states, actions, normalizer)
 
-    max_horizon = int(loss_cfg.get("rollout_train_horizon", 150))
-    min_horizon = int(loss_cfg.get("rollout_min_horizon", 10))
-    # total_updates = int(cfg["training"].get("updates", 30000))
-    total_updates = int(cfg.get("training", {}).get("updates", 30000))
+    max_horizon = int(loss_cfg.get("rollout_train_horizon", 300))
+    min_horizon = int(loss_cfg.get("rollout_min_horizon", 20))
+    total_updates = int(cfg.get("training", {}).get("updates", 50000))
 
-    # 课程学习：前30%训练用短horizon，后期逐渐增长
-    curriculum_ratio = min(1.0, _global_step / (total_updates * 0.3))
     warmup = int(cfg["eval"].get("warmup_steps", 10))
+
+    curriculum_ratio = min(1.0, _global_step / (total_updates * 0.3))
     current_max = int(min_horizon + curriculum_ratio * (max_horizon - min_horizon))
     current_max = max(current_max, min_horizon)
     current_max = min(current_max, states.shape[1] - warmup - 1)
 
-    horizon = int(torch.randint(
-        min_horizon,
-        current_max + 1,
-        (),
-        device=states.device,
-    ).item())
-
-    
+    horizon = int(
+        torch.randint(
+            min_horizon,
+            current_max + 1,
+            (),
+            device=states.device,
+        ).item()
+    )
 
     roll = rollout_loss(
-        model, states, actions, normalizer,
+        model,
+        states,
+        actions,
+        normalizer,
         warmup_steps=warmup,
         horizon=horizon,
     )
