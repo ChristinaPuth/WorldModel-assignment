@@ -35,18 +35,64 @@
 #   report_horizons: [1, 5, 10, 90, 100, 200, 500, 1000]
 #   vpt_thresholds: [0.10, 0.25, 0.50]
 
-sseed: 289
+
+
+
+
+
+
+# #最近的best
+# sseed: 289
+# device: auto
+# torch_num_threads: 4
+
+# model:
+#   hidden_dim: 512
+#   num_layers: 3
+#   use_gru: true
+#   delta_limit: 3.0
+
+# training:
+#   batch_size: 256
+#   updates: 50000
+#   smoke_updates: 120
+#   train_sequence_length: 400
+#   learning_rate: 1.0e-4
+#   grad_clip_norm: 0.5
+#   eval_every: 500
+#   smoke_eval_every: 20
+#   val_horizon: 500
+#   max_val_windows: 128
+#   checkpoint_metric: val/VPT80@0.25
+#   checkpoint_mode: max
+
+# loss:
+#   one_step_weight: 2.0
+#   rollout_weight: 1.0
+#   rollout_min_horizon: 20
+#   rollout_train_horizon: 300
+
+# eval:
+#   warmup_steps: 10
+#   horizon: auto
+#   max_horizon: 1000
+#   report_horizons: [1, 5, 10, 90, 100, 200, 500, 1000]
+#   vpt_thresholds: [0.10, 0.25, 0.50]
+
+
+
+seed: 289
 device: auto
 torch_num_threads: 4
 
 model:
-  hidden_dim: 512
+  hidden_dim: 256      # Transformer用256就够，太大会慢
   num_layers: 3
-  use_gru: true
+  use_gru: false       # 标记用Transformer
   delta_limit: 3.0
 
 training:
-  batch_size: 256
+  batch_size: 128      # Transformer更耗内存，batch小一点
   updates: 50000
   smoke_updates: 120
   train_sequence_length: 400
